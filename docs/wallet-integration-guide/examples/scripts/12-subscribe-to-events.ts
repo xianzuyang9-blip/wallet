@@ -103,6 +103,7 @@ const charliePingCommand = sdk.utils.ping.create([
 
 const pingResult = await sdk.ledger
     .prepare({
+        synchronizerId: globalSynchronizerId,
         partyId: charlie.partyId,
         commands: charliePingCommand,
     })
@@ -164,6 +165,7 @@ const observingConradPingCommand = sdk.utils.ping.create([
 
 const observingPingResult = await sdk.ledger
     .prepare({
+        synchronizerId: globalSynchronizerId,
         partyId: observingCharlie.partyId,
         commands: observingConradPingCommand,
     })

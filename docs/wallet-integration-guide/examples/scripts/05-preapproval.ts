@@ -38,6 +38,7 @@ const [amuletTapCommand, amuletTapDisclosedContracts] = await sdk.amulet.tap(
 
 await sdk.ledger
     .prepare({
+        synchronizerId: globalSynchronizerId,
         partyId: alice.partyId,
         commands: amuletTapCommand,
         disclosedContracts: amuletTapDisclosedContracts,
@@ -70,6 +71,7 @@ logger.info(
 
 await sdk.ledger
     .prepare({
+        synchronizerId: globalSynchronizerId,
         partyId: bob.partyId,
         commands: createPreapprovalCommand,
     })
@@ -118,6 +120,7 @@ const [transferCommand, transferDisclosedContracts] =
 
 await sdk.ledger
     .prepare({
+        synchronizerId: globalSynchronizerId,
         partyId: alice.partyId,
         commands: transferCommand,
         disclosedContracts: transferDisclosedContracts,
@@ -174,6 +177,7 @@ await sdk.amulet.preapproval.renew({
         receiver: bob.partyId,
     },
     expiresAt: newExpiresAt,
+    synchronizerId: globalSynchronizerId,
 })
 
 const fetchedStatusAfterRenew = await sdk.amulet.preapproval.fetchStatus(
@@ -224,6 +228,7 @@ if (!cancelPreapprovalCommand) {
 
 await sdk.ledger
     .prepare({
+        synchronizerId: globalSynchronizerId,
         partyId: bob.partyId,
         commands: cancelPreapprovalCommand,
         disclosedContracts: cancelDisclosedContracts,
