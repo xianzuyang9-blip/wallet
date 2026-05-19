@@ -17,11 +17,7 @@ import {
     Ops,
 } from '@canton-network/core-provider-ledger'
 import { AuthTokenProvider } from '@canton-network/core-wallet-auth'
-import {
-    PrivateKey,
-    PublicKey,
-    signTransactionHash,
-} from '@canton-network/core-signing-lib'
+import { resolveGlobalSynchronizerId } from '../../state/client.js'
 
 /**
  * Represents a signed party creation, ready to be allocated on the ledger.
@@ -31,9 +27,7 @@ export class SignedPartyCreationService {
     constructor(
         private readonly ctx: SDKContext,
         private readonly signedPartyPromise: Promise<ExecuteOptions>,
-        private readonly createPartyOptions?: CreatePartyOptions,
-        private readonly publicKey?: PublicKey,
-        private readonly privateKey?: PrivateKey
+        private readonly createPartyOptions?: CreatePartyOptions
     ) {}
 
     /**
@@ -92,15 +86,6 @@ export class SignedPartyCreationService {
             })
         }
 
-        const additionalSynchronizerIds =
-            this.createPartyOptions?.additionalSynchronizerIds ?? []
-        for (const synchronizerId of additionalSynchronizerIds) {
-            await this.registerOnAdditionalSynchronizer(
-                party.partyId,
-                synchronizerId
-            )
-        }
-
         const grantUserRights = options?.grantUserRights ?? true
 
         if (grantUserRights) {
@@ -116,79 +101,6 @@ export class SignedPartyCreationService {
 
         this.ctx.logger.info('Party allocated successfully.')
         return party
-    }
-
-    /**
-     * Registers the party on an additional synchronizer without granting user rights.
-     * Used when additionalSynchronizerIds is provided in CreatePartyOptions.
-     * @param partyId - The party ID returned from primary allocation
-     * @param synchronizerId - The secondary synchronizer to register the party on
-     */
-    private async registerOnAdditionalSynchronizer(
-        partyId: PartyId,
-        synchronizerId: string
-    ) {
-        if (!this.publicKey || !this.privateKey) {
-            throw new Error(
-                'Cannot register party on additional synchronizer: publicKey and privateKey must be provided (offline signing is not supported for additionalSynchronizerIds)'
-            )
-        }
-
-        if (await this.checkIfPartyExists(partyId, synchronizerId)) {
-            this.ctx.logger.info(
-                `Party already registered on synchronizer ${synchronizerId}.`
-            )
-            return
-        }
-
-        const topology =
-            await this.ctx.ledgerProvider.request<Ops.PostV2PartiesExternalGenerateTopology>(
-                {
-                    method: 'ledgerApi',
-                    params: {
-                        resource: '/v2/parties/external/generate-topology',
-                        body: {
-                            synchronizer: synchronizerId,
-                            partyHint: this.createPartyOptions?.partyHint ?? '',
-                            publicKey: {
-                                format: 'CRYPTO_KEY_FORMAT_RAW',
-                                keyData: this.publicKey,
-                                keySpec: 'SIGNING_KEY_SPEC_EC_CURVE25519',
-                            },
-                            localParticipantObservationOnly: false,
-                            confirmationThreshold: 1,
-                            otherConfirmingParticipantUids: [],
-                            observingParticipantUids: [],
-                        },
-                        requestMethod: 'post',
-                    },
-                }
-            )
-
-        const signature = signTransactionHash(
-            topology.multiHash,
-            this.privateKey
-        )
-
-        await this.allocate(
-            this.ctx.ledgerProvider,
-            synchronizerId,
-            topology.topologyTransactions!.map((transaction) => ({
-                transaction,
-            })),
-            [
-                {
-                    format: 'SIGNATURE_FORMAT_CONCAT',
-                    signature,
-                    signedBy: topology.publicKeyFingerprint,
-                    signingAlgorithmSpec: 'SIGNING_ALGORITHM_SPEC_ED25519',
-                },
-            ]
-        )
-
-        this.ctx.logger.info(
-            `Party registered on additional synchronizer ${synchronizerId}.`
-        )
     }
 
     /**
@@ -240,11 +152,9 @@ export class SignedPartyCreationService {
         } = options
         const ledgerProvider = defaultLedgerProvider ?? this.ctx.ledgerProvider
         try {
-            const synchronizerId = this.createPartyOptions?.synchronizerId
-            if (!synchronizerId)
-                throw new Error(
-                    'synchronizerId is required for external party allocation — pass it via createPartyOptions.synchronizerId'
-                )
+            const synchronizerId =
+                this.createPartyOptions?.synchronizerId ??
+                (await resolveGlobalSynchronizerId(ledgerProvider))
 
             await this.allocate(
                 ledgerProvider,
