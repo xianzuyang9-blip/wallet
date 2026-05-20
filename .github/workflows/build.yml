@@ -62,6 +62,7 @@ jobs:
                       .pnp.loader.mjs
                       core/**/dist/
                       sdk/**/dist/
+                      sdk-support/**/dist/
                       wallet-gateway/**/dist/
                       damljs
                       .nx/cache
@@ -459,7 +460,7 @@ jobs:
               run: yarn nx snippets docs-wallet-integration-guide-examples
 
             - uses: ./.github/actions/check_resources
-
+            # TODO (#1721): make multi-sync the default and remove the flag once multi-sync is fully supported and tested in the main scripts e2e tests, but for now we want to keep it as an option to avoid accidentally running multi-sync e2e tests without updating the main scripts e2e tests to cover multi-sync as well
             - name: Stop Localnet (${{ matrix.network }})
               if: always()
               run: yarn stop:localnet -- --network=${{ matrix.network }}
@@ -512,7 +513,7 @@ jobs:
               run: yarn script:test:examples
 
             - uses: ./.github/actions/check_resources
-
+            # TODO (#1721): make multi-sync the default and remove the flag once multi-sync is fully supported and tested in the main scripts e2e tests, but for now we want to keep it as an option to avoid accidentally running multi-sync e2e tests without updating the main scripts e2e tests to cover multi-sync as well
             - name: Stop Localnet (${{ matrix.network }})
               if: always()
               run: yarn stop:localnet -- --network=${{ matrix.network }}
@@ -534,10 +535,11 @@ jobs:
                   name: docker-logs-scripts-${{ matrix.network }}
                   path: logs/
 
-    wallet-sdk-multi-sync-e2e:
-        name: wallet-sdk-multi-sync-e2e (${{ matrix.network }})
+    # TODO (#1721): remove multi-sync scripts e2e tests once multi-sync is fully supported and tested in the main scripts e2e tests
+    wallet-sdk-scripts-e2e-multi-sync:
+        name: wallet-sdk-scripts-e2e-multi-sync (${{ matrix.network }})
         runs-on: ubuntu-latest
-        needs: [version-config, hydrate-canton-caches]
+        needs: build
         strategy:
             fail-fast: false
             matrix:
@@ -547,42 +549,29 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v6
 
-            - uses: ./.github/actions/setup_yarn/artifacts
-              with:
-                  daml_release_version: ${{ needs.version-config.outputs.daml_release_version }}
+            - uses: ./.github/actions/setup_yarn
 
-            - uses: ./.github/actions/setup_localnet/artifacts
+            - uses: ./.github/actions/setup_canton
               with:
                   network: ${{ matrix.network }}
-                  splice_version: ${{ matrix.network == 'devnet' && needs.version-config.outputs.devnet_splice_version || needs.version-config.outputs.mainnet_splice_version }}
-                  multi_sync: 'true'
-
-            - name: Restore DPM cache
-              uses: actions/cache/restore@v5
-              with:
-                  path: |
-                      ~/.dpm
-                  key: dpm-${{ runner.os }}-${{ needs.version-config.outputs.daml_release_version }}
-
-            - name: Generate featured DARs
-              run: yarn script:generate:featured-dars
-
-            - name: Rebuild DAML-dependent packages
-              run: |
-                  yarn workspace @canton-network/core-test-token build
+                  instance: localnet
+                  multi-sync: 'true'
 
             - uses: ./.github/actions/check_resources
 
-            - name: Test multi-sync scripts (${{ matrix.network }})
+            - name: Build project
+              run: yarn build:all
+
+            - name: Test multi-sync example script (${{ matrix.network }})
               env:
                   MAX_IO_LISTENERS: '50'
               run: yarn script:test:examples:multi-sync
 
             - uses: ./.github/actions/check_resources
-
+            # TODO (#1721): make multi-sync the default and remove the flag once multi-sync is fully supported and tested in the main scripts e2e tests, but for now we want to keep it as an option to avoid accidentally running multi-sync e2e tests without updating the main scripts e2e tests to cover multi-sync as well
             - name: Stop Localnet (${{ matrix.network }})
               if: always()
-              run: yarn stop:localnet -- --network=${{ matrix.network }}
+              run: yarn stop:localnet -- --network=${{ matrix.network }} --multi-sync
 
             - name: Save container logs
               if: failure()
@@ -598,17 +587,16 @@ jobs:
               if: failure()
               uses: actions/upload-artifact@v7
               with:
-                  name: docker-logs-multi-sync-${{ matrix.network }}
+                  name: docker-logs-scripts-multi-sync-${{ matrix.network }}
                   path: logs/
 
     test-wallet-sdk-e2e:
         name: test-wallet-sdk-e2e
         runs-on: ubuntu-latest
-        needs:
-            [
+        needs: [
                 wallet-sdk-snippets-e2e,
                 wallet-sdk-scripts-e2e,
-                wallet-sdk-multi-sync-e2e,
+                wallet-sdk-scripts-e2e-multi-sync, # TODO (#1721): remove multi-sync scripts e2e tests once multi-sync is fully supported and tested in the main scripts e2e tests, but for now we want to keep it as a gate to ensure multi-sync e2e tests are not accidentally skipped without updating the main scripts e2e tests to cover multi-sync as well
                 wallet-sdk-pkg,
             ]
         if: always()
@@ -623,8 +611,8 @@ jobs:
                     echo "wallet-sdk scripts e2e did not succeed"
                     exit 1
                   fi
-                  if [ "${{ needs.wallet-sdk-multi-sync-e2e.result }}" != "success" ]; then
-                    echo "wallet-sdk multi-sync e2e did not succeed"
+                  if [ "${{ needs.wallet-sdk-scripts-e2e-multi-sync.result }}" != "success" ]; then
+                    echo "wallet-sdk scripts e2e (multi-sync) did not succeed"
                     exit 1
                   fi
                   if [ "${{ needs.wallet-sdk-pkg.result }}" != "success" ]; then
