@@ -43,4 +43,5 @@ export type LookupFeaturedAppRightsOptions = {
 export type GrantFeaturedAppRightsOptions = {
     maxRetries?: number
     delayMs?: number
+    synchronizerId?: string
 }

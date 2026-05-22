@@ -52,6 +52,7 @@ export interface MultiSyncSetup {
     alice: PartyInfo
     bob: PartyInfo
     tradingApp: PartyInfo
+    tokenAdmin: PartyInfo
     globalSynchronizerId: string
     appSynchronizerId: string
     synchronizers: SynchronizerMap
@@ -105,7 +106,10 @@ export async function setupMultiSyncTrade(
             `Expected at least 2 connected synchronizers (global + app), found ${allSynchronizers.length}`
         )
 
-    const globalSynchronizerId = resolveGlobalSynchronizerId(allSynchronizers)
+    const globalSynchronizerId = (
+        allSynchronizers.find((s) => s.synchronizerAlias === 'global') ??
+        allSynchronizers[0]
+    )?.synchronizerId
     const appSynchronizerId = allSynchronizers.find(
         (s) => s.synchronizerAlias === 'app-synchronizer'
     )?.synchronizerId
@@ -214,6 +218,7 @@ export async function setupMultiSyncTrade(
         alice,
         bob,
         tradingApp,
+        tokenAdmin: bob,
         globalSynchronizerId,
         appSynchronizerId,
         synchronizers,
