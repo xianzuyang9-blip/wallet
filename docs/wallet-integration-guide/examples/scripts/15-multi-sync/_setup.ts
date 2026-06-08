@@ -11,22 +11,19 @@ import {
     type SDKInterface,
     type SDKContext,
     type TokenNamespace,
+    vetPackage,
 } from '@canton-network/wallet-sdk'
 import type { KeyPair } from '@canton-network/core-signing-lib'
 import type { GenerateTransactionResponse } from '@canton-network/core-ledger-client'
 import { ScanProxyClient } from '@canton-network/wallet-sdk'
 import { AuthTokenProvider } from '@canton-network/core-wallet-auth'
 import {
+    AMULET_NAMESPACE_CONFIG,
     TOKEN_NAMESPACE_CONFIG,
     TOKEN_PROVIDER_CONFIG_DEFAULT,
     resolveGlobalSynchronizerId,
-    vetDar,
 } from '../utils/index.js'
 import type { SynchronizerMap } from '../utils/index.js'
-import {
-    LOCALNET_BOB_LEDGER_URL,
-    LOCALNET_TRADING_APP_LEDGER_URL,
-} from './_config.js'
 
 export type PartyInfo = Omit<
     GenerateTransactionResponse,
@@ -36,19 +33,20 @@ export type PartyInfo = Omit<
     keyPair: KeyPair
 }
 
-const DARS_PATH = '../../../../../.localnet/dars'
-const TRADING_APP_DAR = 'splice-token-test-trading-app-1.0.0.dar'
-const TEST_TOKEN_V1_DAR = 'splice-test-token-v1-1.0.0.dar'
+const TEST_TOKEN_V1_DAR =
+    '../../../../../damljs/splice-test-token-v1/.daml/dist/splice-test-token-v1-1.0.0.dar'
+const LOCALNET_PATH = '../../../../../.localnet'
+const TRADING_APP_DAR_LOCALNET = '/dars/splice-token-test-trading-app-1.0.1.dar'
 
 export interface MultiSyncSetup {
-    p1Sdk: SDKInterface<'token'>
+    p1Sdk: SDKInterface<'token' | 'amulet'>
     p2Sdk: SDKInterface<'token'>
     p3Sdk: SDKInterface<'token'>
     p1SdkCtx: SDKContext
     p2SdkCtx: SDKContext
     p3SdkCtx: SDKContext
-    tokenP1: TokenNamespace
-    tokenP2: TokenNamespace
+    tokenNamespaceP1: TokenNamespace
+    tokenNamespaceP2: TokenNamespace
     alice: PartyInfo
     bob: PartyInfo
     tradingApp: PartyInfo
@@ -64,28 +62,30 @@ export interface MultiSyncSetup {
  * Bootstraps a fresh multi-synchronizer environment:
  *   - Creates SDK instances for P1 (app-user), P2 (app-provider), P3 (sv)
  *   - Discovers global + app synchronizer IDs from P1
- *   - Allocates alice (P1), bob (P2), tradingApp (P3) on global synchronizer
- *   - Registers alice and bob on app-synchronizer; tradingApp is global-only
+ *   - Allocates alice (P1), bob (P2), tradingApp (P3), tokenAdmin (P2) on global synchronizer
+ *     while simultaneously registering alice, bob, and tokenAdmin on app-synchronizer
+ *   - tradingApp is global-only
  *   - Connects the scan proxy and returns the Amulet admin party ID
  */
 export async function setupMultiSyncTrade(
     logger: Logger
 ): Promise<MultiSyncSetup> {
-    // Create three SDK instances — one per participant node
     const [p1Sdk, p2Sdk, p3Sdk] = await Promise.all([
         SDK.create({
             auth: TOKEN_PROVIDER_CONFIG_DEFAULT,
             ledgerClientUrl: localNetStaticConfig.LOCALNET_APP_USER_LEDGER_URL,
+            amulet: AMULET_NAMESPACE_CONFIG,
             token: TOKEN_NAMESPACE_CONFIG,
         }),
         SDK.create({
             auth: TOKEN_PROVIDER_CONFIG_DEFAULT,
-            ledgerClientUrl: LOCALNET_BOB_LEDGER_URL,
+            ledgerClientUrl:
+                localNetStaticConfig.LOCALNET_APP_PROVIDER_LEDGER_URL,
             token: TOKEN_NAMESPACE_CONFIG,
         }),
         SDK.create({
             auth: TOKEN_PROVIDER_CONFIG_DEFAULT,
-            ledgerClientUrl: LOCALNET_TRADING_APP_LEDGER_URL,
+            ledgerClientUrl: localNetStaticConfig.LOCALNET_SV_LEDGER_URL,
             token: TOKEN_NAMESPACE_CONFIG,
         }),
     ])
@@ -97,24 +97,18 @@ export async function setupMultiSyncTrade(
     const p3SdkCtx = (p3Sdk.ledger as unknown as { sdkContext: SDKContext })
         .sdkContext
 
-    // Discover synchronizer IDs from P1 (they are topology-wide, not per-participant)
-    const connectedSyncResponse =
-        await p1Sdk.ledger.state.connectedSynchronizers({})
+    const connectedSyncResponse = await p1Sdk.ledger.connectedSynchronizers({})
     const allSynchronizers = connectedSyncResponse.connectedSynchronizers ?? []
     if (allSynchronizers.length < 2)
         throw new Error(
             `Expected at least 2 connected synchronizers (global + app), found ${allSynchronizers.length}`
         )
 
-    const globalSynchronizerId = (
-        allSynchronizers.find((s) => s.synchronizerAlias === 'global') ??
-        allSynchronizers[0]
-    )?.synchronizerId
+    const globalSynchronizerId = resolveGlobalSynchronizerId(allSynchronizers)
     const appSynchronizerId = allSynchronizers.find(
         (s) => s.synchronizerAlias === 'app-synchronizer'
     )?.synchronizerId
 
-    if (!globalSynchronizerId) throw new Error('Global synchronizer not found')
     if (!appSynchronizerId)
         throw new Error(
             'App synchronizer not found — start localnet with --multi-sync to enable it.'
@@ -132,36 +126,69 @@ export async function setupMultiSyncTrade(
         appSynchronizerId,
     }
 
-    // Allocate parties: alice on P1, bob on P2, tradingApp on P3, tokenAdmin on P2 (all on global synchronizer)
-    // tokenAdmin is on P2 (not P3/sv) because it operates on app-synchronizer, and sv is global-only.
+    const here = path.dirname(fileURLToPath(import.meta.url))
+    const [testTokenV1Dar, tradingAppDar] = await Promise.all([
+        fs.readFile(path.join(here, TEST_TOKEN_V1_DAR)),
+        fs.readFile(path.join(here, LOCALNET_PATH, TRADING_APP_DAR_LOCALNET)),
+    ])
+
+    await Promise.all(
+        [testTokenV1Dar, tradingAppDar].flatMap((dar) => [
+            ...[p1SdkCtx, p2SdkCtx].flatMap((ctx) =>
+                [globalSynchronizerId, appSynchronizerId].map((sid) =>
+                    vetPackage(ctx.ledgerProvider, dar, sid)
+                )
+            ),
+            vetPackage(p3SdkCtx.ledgerProvider, dar, globalSynchronizerId),
+        ])
+    )
+    logger.info(
+        'TestTokenV1 + trading-app DARs vetted: P1+P2 on both synchronizers, P3 on global only'
+    )
+
     const aliceKey = p1Sdk.keys.generate()
     const bobKey = p1Sdk.keys.generate()
     const tradingAppKey = p1Sdk.keys.generate()
+    const tokenAdminKey = p2Sdk.keys.generate()
 
-    const [allocatedAlice, allocatedBob, allocatedTradingApp] =
-        await Promise.all([
-            p1Sdk.party.external
-                .create(aliceKey.publicKey, {
-                    partyHint: 'v1-15-alice',
-                    synchronizerId: globalSynchronizerId,
-                })
-                .sign(aliceKey.privateKey)
-                .execute(),
-            p2Sdk.party.external
-                .create(bobKey.publicKey, {
-                    partyHint: 'v1-15-bob',
-                    synchronizerId: globalSynchronizerId,
-                })
-                .sign(bobKey.privateKey)
-                .execute(),
-            p3Sdk.party.external
-                .create(tradingAppKey.publicKey, {
-                    partyHint: 'v1-15-trading-app',
-                    synchronizerId: globalSynchronizerId,
-                })
-                .sign(tradingAppKey.privateKey)
-                .execute(),
-        ])
+    const [
+        allocatedAlice,
+        allocatedBob,
+        allocatedTradingApp,
+        allocatedTokenAdmin,
+    ] = await Promise.all([
+        p1Sdk.party.external
+            .create(aliceKey.publicKey, {
+                partyHint: 'Alice',
+                synchronizerId: globalSynchronizerId,
+                additionalSynchronizerIds: [appSynchronizerId],
+            })
+            .sign(aliceKey.privateKey)
+            .execute(),
+        p2Sdk.party.external
+            .create(bobKey.publicKey, {
+                partyHint: 'Bob',
+                synchronizerId: globalSynchronizerId,
+                additionalSynchronizerIds: [appSynchronizerId],
+            })
+            .sign(bobKey.privateKey)
+            .execute(),
+        p3Sdk.party.external
+            .create(tradingAppKey.publicKey, {
+                partyHint: 'TradingApp',
+                synchronizerId: globalSynchronizerId,
+            })
+            .sign(tradingAppKey.privateKey)
+            .execute(),
+        p2Sdk.party.external
+            .create(tokenAdminKey.publicKey, {
+                partyHint: 'TokenAdmin',
+                synchronizerId: globalSynchronizerId,
+                additionalSynchronizerIds: [appSynchronizerId],
+            })
+            .sign(tokenAdminKey.privateKey)
+            .execute(),
+    ])
 
     const alice: PartyInfo = { ...allocatedAlice, keyPair: aliceKey }
     const bob: PartyInfo = { ...allocatedBob, keyPair: bobKey }
@@ -169,31 +196,15 @@ export async function setupMultiSyncTrade(
         ...allocatedTradingApp,
         keyPair: tradingAppKey,
     }
+    const tokenAdmin: PartyInfo = {
+        ...allocatedTokenAdmin,
+        keyPair: tokenAdminKey,
+    }
 
     logger.info(
-        `Parties allocated — alice: ${alice.partyId} (P1), bob: ${bob.partyId} (P2), tradingApp: ${tradingApp.partyId} (P3)`
+        `Parties allocated on global-synchronizer and registered on app-synchronizer — alice: ${alice.partyId} (P1), bob: ${bob.partyId} (P2), tradingApp: ${tradingApp.partyId} (P3), tokenAdmin: ${tokenAdmin.partyId} (P2)`
     )
 
-    // Register Alice and Bob on app-synchronizer so they can transact there.
-    await Promise.all([
-        p1Sdk.party.external
-            .create(alice.keyPair.publicKey, {
-                partyHint: alice.partyId.split('::')[0],
-                synchronizerId: appSynchronizerId,
-            })
-            .sign(alice.keyPair.privateKey)
-            .execute({ grantUserRights: false }),
-        p2Sdk.party.external
-            .create(bob.keyPair.publicKey, {
-                partyHint: bob.partyId.split('::')[0],
-                synchronizerId: appSynchronizerId,
-            })
-            .sign(bob.keyPair.privateKey)
-            .execute({ grantUserRights: false }),
-    ])
-    logger.info('Alice and Bob registered on app-synchronizer')
-
-    // Connect scan proxy and discover Amulet admin
     const auth = new AuthTokenProvider(TOKEN_PROVIDER_CONFIG_DEFAULT, logger)
     const scanProxy = new ScanProxyClient(
         localNetStaticConfig.LOCALNET_APP_VALIDATOR_URL,
@@ -213,12 +224,12 @@ export async function setupMultiSyncTrade(
         p1SdkCtx,
         p2SdkCtx,
         p3SdkCtx,
-        tokenP1: p1Sdk.token,
-        tokenP2: p2Sdk.token,
+        tokenNamespaceP1: p1Sdk.token,
+        tokenNamespaceP2: p2Sdk.token,
         alice,
         bob,
         tradingApp,
-        tokenAdmin: bob,
+        tokenAdmin,
         globalSynchronizerId,
         appSynchronizerId,
         synchronizers,

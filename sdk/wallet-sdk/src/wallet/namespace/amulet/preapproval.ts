@@ -7,7 +7,6 @@ import { PreapprovalParties } from './types.js'
 import { LedgerNamespace } from '../ledger/namespace.js'
 import { fetchAmulet } from './namespace.js'
 import { SDKLogger } from '../../logger/logger.js'
-import { resolveGlobalSynchronizerId } from '../state/client.js'
 
 const EMPTY_COMMAND_RESULT = [null, []] as const
 
@@ -116,9 +115,7 @@ export class PreapprovalNamespace {
         const { parties, inputUtxos, expiresAt } = args
         const preapprovalStatus = await this.fetchStatus(parties.receiver)
         const provider = parties?.provider ?? this.ctx.validatorParty
-        const synchronizerId = await resolveGlobalSynchronizerId(
-            this.ctx.commonCtx.ledgerProvider
-        )
+        const synchronizerId = this.ctx.commonCtx.defaultSynchronizerId
 
         if (
             !preapprovalStatus ||
